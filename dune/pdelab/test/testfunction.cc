@@ -4,6 +4,7 @@
 
 #include <iostream>
 
+#include <dune/common/math.hh>
 #include <dune/common/parallel/mpihelper.hh>
 
 #include <dune/grid/yaspgrid.hh>
@@ -12,7 +13,7 @@
 #include <dune/pdelab/common/vtkexport.hh>
 
 #include <dune/pdelab/backend/istlvectorbackend.hh>
-#include <dune/pdelab/finiteelementmap/p0fem.hh>
+#include <dune/pdelab/finiteelementmap/qkfem.hh>
 #include <dune/pdelab/gridfunctionspace/gridfunctionspace.hh>
 #include <dune/pdelab/function/discretegridviewfunction.hh>
 
@@ -27,7 +28,8 @@ public:
   inline void evaluate (const Dune::FieldVector<T,2>& x,
                         Dune::FieldVector<T,1>& y) const
   {
-    y = sin(3*3.1415*x[0])*cos(7*3.1415*x[1]);
+    y = sin(3*Dune::StandardMathematicalConstants<T>::pi()*x[0])
+      * cos(7*Dune::StandardMathematicalConstants<T>::pi()*x[1]);
   }
 };
 
@@ -88,7 +90,7 @@ void testvtkexport (const GV& gv, const T& t)
   Dune::PDELab::VTKGridFunctionAdapter<GF> vtkf(gf,"blub");
 
   Dune::VTKWriter<GV> vtkwriter(gv,Dune::VTK::conforming);
-  vtkwriter.addVertexData(new Dune::PDELab::VTKGridFunctionAdapter<GF>(gf,"blub")); // VTKWriter takes control
+  vtkwriter.addVertexData(Dune::make_shared< Dune::PDELab::VTKGridFunctionAdapter<GF> >(gf,"blub")); // VTKWriter takes control
   vtkwriter.write("single",Dune::VTK::ascii);
 }
 
@@ -187,30 +189,50 @@ template<class GV>
 void testgridviewfunction (const GV& gv)
 {
     enum { dim = GV::dimension };
-    Dune::GeometryType gt;
-    gt.makeCube(2);
-    typedef Dune::PDELab::P0LocalFiniteElementMap<float,double,GV::dimension> P0FEM;
-    P0FEM p0fem(gt);
+    typedef Dune::PDELab::QkLocalFiniteElementMap<GV,float,double,1> Q1FEM;
+    Q1FEM q1fem(gv);
     // make a grid function space
-    typedef Dune::PDELab::GridFunctionSpace<GV,P0FEM> P0GFS;
-    P0GFS p0gfs(gv,p0fem);
+    typedef Dune::PDELab::GridFunctionSpace<GV,Q1FEM> Q1GFS;
+    Q1GFS q1gfs(gv,q1fem);
     // make vector
-    typedef typename Dune::PDELab::BackendVectorSelector<P0GFS,double>::Type Vector;
-    Vector x(p0gfs);
+    typedef typename Dune::PDELab::BackendVectorSelector<Q1GFS,double>::Type Vector;
+    Vector x(q1gfs);
     // make functions
-    Dune::PDELab::DiscreteGridViewFunction<P0GFS,double> dgvf(p0gfs,x);
+    typedef Dune::PDELab::DiscreteGridViewFunction<Q1GFS,double> DiscreteFunction;
+    DiscreteFunction dgvf(q1gfs,x);
     // make local functions
-    auto localf = Dune::Functions::localFunction(dgvf);
+    typedef typename DiscreteFunction::LocalFunction LocalFunction;
+    Dune::shared_ptr<LocalFunction>
+        localf = Dune::Functions::localFunction(dgvf);
     // iterate grid and evaluate local function
+    static const int maxDiffOrder = LocalFunction::Traits::maxDiffOrder;
+    std::cout << "max diff order: " << maxDiffOrder << std::endl;
+    std::cout << "checking for:\n";
+    std::cout << "\tevaluate\n";
+    if (maxDiffOrder >= 1)
+        std::cout << "\tjacobian\n";
+    if (maxDiffOrder >= 2)
+        std::cout << "\thessian\n";
+    if (maxDiffOrder >= 3)
+        std::cout << "\tdiff(3)\n";
     for (auto it=gv.template begin<0>(); it!=gv.template end<0>(); ++it)
     {
         localf->bind(*it);
         Dune::FieldVector<double,1> value;
-        Dune::FieldMatrix<double,dim,1> jacobian;
+        Dune::FieldMatrix<double,1,dim> jacobian;
         Dune::FieldMatrix<double,dim,dim> hessian;
         localf->evaluate(it->geometry().center(), value);
-        Dune::Functions::derivative(localf)->
-            evaluate(it->geometry().center(), jacobian);
+        if (maxDiffOrder >= 1)
+            Dune::Functions::derivative(localf)->
+                evaluate(it->geometry().center(), jacobian);
+        if (maxDiffOrder >= 2)
+            Dune::Functions::derivative(
+                Dune::Functions::derivative(localf))->
+                evaluate(it->geometry().center(), hessian);
+        if (maxDiffOrder >= 3)
+            Dune::Functions::derivative(
+                Dune::Functions::derivative(
+                    Dune::Functions::derivative(localf)));
         localf->unbind();
     }
 }
